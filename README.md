@@ -209,4 +209,4 @@ The plugin uses WordPress capabilities and nonces for report actions, sanitizes 
 
 ## License
 
-GPL-2.0-or-later.
+MIT
