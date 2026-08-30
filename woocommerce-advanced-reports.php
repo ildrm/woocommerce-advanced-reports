@@ -1,10 +1,11 @@
 <?php
 /**
  * Plugin Name: WooCommerce Advanced Reports
- * Plugin URI: https://github.com/ildrm
+ * Plugin URI: https://github.com/ildrm/woocommerce-advanced-reports
  * Description: Comprehensive WooCommerce reporting with Product, Order and Customer analytics, Jalali/Gregorian dates, CSV/XLSX export, printing, saved reports and scheduled reports.
  * Version: 1.0.0
  * Author: Shahin Ilderemi
+ * Author URI:  https://ildrm.com
  * Requires at least: 6.5
  * Requires PHP: 8.1
  * Requires Plugins: woocommerce
