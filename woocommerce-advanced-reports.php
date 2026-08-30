@@ -9,8 +9,7 @@
  * Requires at least: 6.5
  * Requires PHP: 8.1
  * Requires Plugins: woocommerce
- * License: GPL-2.0-or-later
- * License URI: https://www.gnu.org/licenses/gpl-2.0.html
+ * License: MIT
  * WC requires at least: 8.2
  * Text Domain: woocommerce-advanced-reports
  * Domain Path: /languages
