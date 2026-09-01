@@ -20,9 +20,9 @@ final class AnalyticsService {
 
     public function dashboard( ReportFilter $f ): array {
         $summary = $this->sales_summary( $f );
-        $by_date = $this->orders_by_date( $f );
+        $by_date = $f->currency ? $this->orders_by_date( $f ) : array( 'rows'=>array() );
         $status = $this->orders_by_status( $f );
-        $products = $this->best_products( $f );
+        $products = $f->currency ? $this->best_products( $f ) : array( 'rows'=>array() );
         $customers = $this->new_returning( $f );
         return array(
             'columns' => array(),
@@ -35,7 +35,7 @@ final class AnalyticsService {
                 'products' => array_slice( $products['rows'], 0, 10 ),
                 'customers' => $customers['rows'],
             ),
-            'note' => __( 'Financial totals are kept separate by currency. Select a currency filter for single-currency KPI totals.', 'woocommerce-advanced-reports' ),
+            'note' => $f->currency ? '' : __( 'Financial totals are kept separate by currency. Select a currency filter for single-currency KPI totals and monetary charts.', 'woocommerce-advanced-reports' ),
         );
     }
 
@@ -107,8 +107,7 @@ final class AnalyticsService {
 
     public function orders_by_status( ReportFilter $f ): array {
         $groups = array();
-        $all_statuses = array_map( static fn( $s ) => str_replace( 'wc-', '', $s ), array_keys( wc_get_order_statuses() ) );
-        foreach ( $this->orders->iterate( $f, $all_statuses ) as $order ) {
+        foreach ( $this->orders->iterate( $f ) as $order ) {
             $status = $order->get_status();
             $currency = $order->get_currency();
             $key = $status . '|' . $currency;
@@ -162,9 +161,10 @@ final class AnalyticsService {
         $groups = array();
         foreach ( $this->orders->iterate( $f ) as $order ) {
             $currency = $order->get_currency();
+            $method_id = $order->get_payment_method();
             $method = $order->get_payment_method_title() ?: __( 'Unknown', 'woocommerce-advanced-reports' );
-            $key = $method . '|' . $currency;
-            if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array( 'payment_method' => $method, 'currency' => $currency, 'orders' => 0, 'gross_sales' => 0.0, 'refunds' => 0.0, 'net_sales' => 0.0, 'aov' => 0.0 ); }
+            $key = $method_id . '|' . $currency;
+            if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array( 'payment_method_id' => $method_id, 'payment_method' => $method, 'currency' => $currency, 'orders' => 0, 'gross_sales' => 0.0, 'refunds' => 0.0, 'net_sales' => 0.0, 'aov' => 0.0 ); }
             $m = $this->order_metrics( $order );
             $groups[ $key ]['orders']++;
             $groups[ $key ]['gross_sales'] += $m['gross_sales'];
@@ -172,8 +172,8 @@ final class AnalyticsService {
             $groups[ $key ]['net_sales'] += $m['net_sales'];
         }
         foreach ( $groups as &$row ) { $row['aov'] = $row['orders'] ? $row['net_sales'] / $row['orders'] : 0; } unset( $row );
-        usort( $groups, static fn( $a, $b ) => $b['net_sales'] <=> $a['net_sales'] );
-        return array( 'columns' => array( 'payment_method' => __( 'Payment Method', 'woocommerce-advanced-reports' ), 'currency' => __( 'Currency', 'woocommerce-advanced-reports' ), 'orders' => __( 'Orders', 'woocommerce-advanced-reports' ), 'gross_sales' => __( 'Gross Sales', 'woocommerce-advanced-reports' ), 'refunds' => __( 'Refunds', 'woocommerce-advanced-reports' ), 'net_sales' => __( 'Net Collected', 'woocommerce-advanced-reports' ), 'aov' => __( 'AOV', 'woocommerce-advanced-reports' ) ), 'rows' => array_values( $groups ), 'summary' => array() );
+        usort( $groups, static fn( $a, $b ) => self::compare_currency_metric( $a, $b, 'net_sales' ) );
+        return array( 'columns' => array( 'payment_method_id' => __( 'Payment Method ID', 'woocommerce-advanced-reports' ), 'payment_method' => __( 'Payment Method', 'woocommerce-advanced-reports' ), 'currency' => __( 'Currency', 'woocommerce-advanced-reports' ), 'orders' => __( 'Orders', 'woocommerce-advanced-reports' ), 'gross_sales' => __( 'Gross Sales', 'woocommerce-advanced-reports' ), 'refunds' => __( 'Refunds', 'woocommerce-advanced-reports' ), 'net_sales' => __( 'Net Collected', 'woocommerce-advanced-reports' ), 'aov' => __( 'AOV', 'woocommerce-advanced-reports' ) ), 'rows' => array_values( $groups ), 'summary' => array() );
     }
 
     public function shipping( ReportFilter $f ): array {
@@ -184,29 +184,31 @@ final class AnalyticsService {
             if ( ! $shipping_items ) { $shipping_items = array( null ); }
             foreach ( $shipping_items as $item ) {
                 $method = $item ? $item->get_method_title() : __( 'No shipping method', 'woocommerce-advanced-reports' );
+                $method_id = $item ? $item->get_method_id() : '';
+                $instance_id = $item ? (int) $item->get_instance_id() : 0;
                 $zone = __( 'Unknown', 'woocommerce-advanced-reports' );
                 if ( $item && $item->get_instance_id() && method_exists( '\WC_Shipping_Zones', 'get_zone_by' ) ) { $zone_obj = \WC_Shipping_Zones::get_zone_by( 'instance_id', $item->get_instance_id() ); if ( $zone_obj ) { $zone = $zone_obj->get_zone_name(); } }
-                $key = $method . '|' . $zone . '|' . $currency;
-                if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array( 'shipping_method' => $method, 'shipping_zone' => $zone, 'currency' => $currency, 'orders' => 0, 'shipping_revenue' => 0.0, 'order_value' => 0.0 ); }
+                $key = $method_id . ':' . $instance_id . '|' . $currency;
+                if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array( 'shipping_method_id' => $method_id, 'shipping_instance_id' => $instance_id ?: '', 'shipping_method' => $method, 'shipping_zone' => $zone, 'currency' => $currency, 'orders' => 0, 'shipping_revenue' => 0.0, 'order_value' => 0.0 ); }
                 $groups[ $key ]['orders']++;
-                $groups[ $key ]['shipping_revenue'] += $item ? (float) $item->get_total() + (float) $item->get_total_tax() : 0.0;
+                $groups[ $key ]['shipping_revenue'] += $item ? (float) $item->get_total() : 0.0;
                 $groups[ $key ]['order_value'] += (float) $order->get_total();
             }
         }
         foreach ( $groups as &$row ) { $row['avg_shipping'] = $row['orders'] ? $row['shipping_revenue'] / $row['orders'] : 0; } unset( $row );
-        return array( 'columns' => array( 'shipping_method' => __( 'Shipping Method', 'woocommerce-advanced-reports' ), 'shipping_zone' => __( 'Shipping Zone', 'woocommerce-advanced-reports' ), 'currency' => __( 'Currency', 'woocommerce-advanced-reports' ), 'orders' => __( 'Shipments', 'woocommerce-advanced-reports' ), 'shipping_revenue' => __( 'Shipping Revenue', 'woocommerce-advanced-reports' ), 'avg_shipping' => __( 'Average Shipping', 'woocommerce-advanced-reports' ), 'order_value' => __( 'Order Value', 'woocommerce-advanced-reports' ) ), 'rows' => array_values( $groups ), 'summary' => array() );
+        return array( 'columns' => array( 'shipping_method_id' => __( 'Shipping Method ID', 'woocommerce-advanced-reports' ), 'shipping_instance_id' => __( 'Instance ID', 'woocommerce-advanced-reports' ), 'shipping_method' => __( 'Shipping Method', 'woocommerce-advanced-reports' ), 'shipping_zone' => __( 'Shipping Zone', 'woocommerce-advanced-reports' ), 'currency' => __( 'Currency', 'woocommerce-advanced-reports' ), 'orders' => __( 'Shipments', 'woocommerce-advanced-reports' ), 'shipping_revenue' => __( 'Shipping Revenue', 'woocommerce-advanced-reports' ), 'avg_shipping' => __( 'Average Shipping', 'woocommerce-advanced-reports' ), 'order_value' => __( 'Order Value', 'woocommerce-advanced-reports' ) ), 'rows' => array_values( $groups ), 'summary' => array() );
     }
 
     public function coupons( ReportFilter $f ): array {
         $groups = array();
         foreach ( $this->orders->iterate( $f ) as $order ) {
-            $codes = $order->get_coupon_codes();
-            foreach ( $codes as $code ) {
+            foreach ( $order->get_items( 'coupon' ) as $coupon_item ) {
+                $code = $coupon_item->get_code();
                 $currency = $order->get_currency();
                 $key = strtolower( $code ) . '|' . $currency;
                 if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array( 'coupon' => $code, 'currency' => $currency, 'orders' => 0, 'discount' => 0.0, 'revenue' => 0.0, 'aov' => 0.0, 'customers' => array() ); }
                 $groups[ $key ]['orders']++;
-                $groups[ $key ]['discount'] += (float) $order->get_discount_total() + (float) $order->get_discount_tax();
+                $groups[ $key ]['discount'] += (float) $coupon_item->get_discount() + (float) $coupon_item->get_discount_tax();
                 $groups[ $key ]['revenue'] += max( 0, (float) $order->get_total() - (float) $order->get_total_refunded() );
                 $groups[ $key ]['customers'][ $this->customer_identity( $order ) ] = true;
             }
@@ -220,17 +222,18 @@ final class AnalyticsService {
         foreach ( $this->orders->iterate( $f ) as $order ) {
             foreach ( $order->get_items( 'tax' ) as $tax ) {
                 $currency = $order->get_currency();
-                $label = $tax->get_label() ?: (string) $tax->get_rate_id();
+                $rate_id = (int) $tax->get_rate_id();
+                $label = $tax->get_label() ?: (string) $rate_id;
                 $country = $order->get_billing_country() ?: '--'; $state = $order->get_billing_state() ?: '--';
-                $key = $label . '|' . $country . '|' . $state . '|' . $currency;
-                if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array( 'tax_rate' => $label, 'country' => $country, 'state' => $state, 'currency' => $currency, 'orders' => 0, 'product_tax' => 0.0, 'shipping_tax' => 0.0, 'total_tax' => 0.0 ); }
+                $key = $rate_id . '|' . $label . '|' . $country . '|' . $state . '|' . $currency;
+                if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array( 'tax_rate_id' => $rate_id, 'tax_rate' => $label, 'country' => $country, 'state' => $state, 'currency' => $currency, 'orders' => 0, 'product_tax' => 0.0, 'shipping_tax' => 0.0, 'total_tax' => 0.0 ); }
                 $groups[ $key ]['orders']++;
                 $groups[ $key ]['product_tax'] += (float) $tax->get_tax_total();
                 $groups[ $key ]['shipping_tax'] += (float) $tax->get_shipping_tax_total();
                 $groups[ $key ]['total_tax'] += (float) $tax->get_tax_total() + (float) $tax->get_shipping_tax_total();
             }
         }
-        return array( 'columns' => array( 'tax_rate' => __( 'Tax Rate', 'woocommerce-advanced-reports' ), 'country' => __( 'Country', 'woocommerce-advanced-reports' ), 'state' => __( 'State / Province', 'woocommerce-advanced-reports' ), 'currency' => __( 'Currency', 'woocommerce-advanced-reports' ), 'orders' => __( 'Orders', 'woocommerce-advanced-reports' ), 'product_tax' => __( 'Product Tax', 'woocommerce-advanced-reports' ), 'shipping_tax' => __( 'Shipping Tax', 'woocommerce-advanced-reports' ), 'total_tax' => __( 'Total Tax', 'woocommerce-advanced-reports' ) ), 'rows' => array_values( $groups ), 'summary' => array() );
+        return array( 'columns' => array( 'tax_rate_id' => __( 'Tax Rate ID', 'woocommerce-advanced-reports' ), 'tax_rate' => __( 'Tax Rate', 'woocommerce-advanced-reports' ), 'country' => __( 'Country', 'woocommerce-advanced-reports' ), 'state' => __( 'State / Province', 'woocommerce-advanced-reports' ), 'currency' => __( 'Currency', 'woocommerce-advanced-reports' ), 'orders' => __( 'Orders', 'woocommerce-advanced-reports' ), 'product_tax' => __( 'Product Tax', 'woocommerce-advanced-reports' ), 'shipping_tax' => __( 'Shipping Tax', 'woocommerce-advanced-reports' ), 'total_tax' => __( 'Total Tax', 'woocommerce-advanced-reports' ) ), 'rows' => array_values( $groups ), 'summary' => array() );
     }
 
     public function refunds( ReportFilter $f ): array {
@@ -269,19 +272,19 @@ final class AnalyticsService {
             $groups[ $key ]['revenue'] += max( 0, (float) $order->get_total() - (float) $order->get_total_refunded() );
         }
         foreach ( $groups as &$row ) { $row['customers'] = count( $row['customers'] ); $row['aov'] = $row['orders'] ? $row['revenue'] / $row['orders'] : 0; } unset( $row );
-        usort( $groups, static fn( $a, $b ) => $b['revenue'] <=> $a['revenue'] );
+        usort( $groups, static fn( $a, $b ) => self::compare_currency_metric( $a, $b, 'revenue' ) );
         return array( 'columns' => array( 'country' => __( 'Country', 'woocommerce-advanced-reports' ), 'state' => __( 'State / Province', 'woocommerce-advanced-reports' ), 'city' => __( 'City', 'woocommerce-advanced-reports' ), 'currency' => __( 'Currency', 'woocommerce-advanced-reports' ), 'orders' => __( 'Orders', 'woocommerce-advanced-reports' ), 'customers' => __( 'Customers', 'woocommerce-advanced-reports' ), 'items' => __( 'Items', 'woocommerce-advanced-reports' ), 'revenue' => __( 'Net Collected', 'woocommerce-advanced-reports' ), 'aov' => __( 'AOV', 'woocommerce-advanced-reports' ) ), 'rows' => array_values( $groups ), 'summary' => array() );
     }
 
     public function product_sales( ReportFilter $f ): array {
         $rows = $this->aggregate_products( $f, false );
-        usort( $rows, static fn( $a, $b ) => $b['net_sales'] <=> $a['net_sales'] );
+        usort( $rows, static fn( $a, $b ) => self::compare_currency_metric( $a, $b, 'net_sales' ) );
         return array( 'columns' => $this->product_sales_columns(), 'rows' => $rows, 'summary' => array() );
     }
 
     public function product_variations( ReportFilter $f ): array {
         $rows = array_values( array_filter( $this->aggregate_products( $f, true ), static fn( $r ) => ! empty( $r['variation_id'] ) ) );
-        usort( $rows, static fn( $a, $b ) => $b['net_sales'] <=> $a['net_sales'] );
+        usort( $rows, static fn( $a, $b ) => self::compare_currency_metric( $a, $b, 'net_sales' ) );
         return array( 'columns' => $this->product_sales_columns(), 'rows' => $rows, 'summary' => array() );
     }
 
@@ -290,18 +293,22 @@ final class AnalyticsService {
     public function worst_products( ReportFilter $f ): array {
         $result = $this->product_sales( $f );
         $result['rows'] = array_values( array_filter( $result['rows'], static fn( $r ) => $r['quantity_sold'] > 0 ) );
-        usort( $result['rows'], static fn( $a, $b ) => $a['net_sales'] <=> $b['net_sales'] );
+        usort( $result['rows'], static fn( $a, $b ) => self::compare_currency_metric( $a, $b, 'net_sales', false ) );
         return $result;
     }
 
     public function products_no_sales( ReportFilter $f ): array {
-        $sold = array();
-        foreach ( $this->aggregate_products( $f, false ) as $row ) { $sold[ (int) $row['product_id'] ] = true; }
+        $sold_products = array();
+        foreach ( $this->aggregate_products( $f, false ) as $row ) { $sold_products[ (int) $row['product_id'] ] = true; }
+        $sold_variations = array();
+        foreach ( $this->aggregate_products( $f, true ) as $row ) { $sold_variations[ (int) $row['variation_id'] ] = true; }
         $rows = array();
         foreach ( $this->products->iterate( $f ) as $product ) {
             $parent_id = $product->is_type( 'variation' ) ? $product->get_parent_id() : $product->get_id();
-            if ( isset( $sold[ $parent_id ] ) || isset( $sold[ $product->get_id() ] ) ) { continue; }
-            $rows[] = array( 'product_id' => $product->get_id(), 'sku' => $product->get_sku(), 'product' => $product->get_name(), 'type' => $product->get_type(), 'category' => $this->products->categories_for_product( $parent_id ), 'price' => (float) $product->get_price(), 'stock' => $product->managing_stock() ? (int) $product->get_stock_quantity() : '', 'stock_status' => wc_get_product_stock_status_options()[ $product->get_stock_status() ] ?? $product->get_stock_status() );
+            $has_sales = $product->is_type( 'variation' ) ? isset( $sold_variations[ $product->get_id() ] ) : isset( $sold_products[ $product->get_id() ] );
+            if ( $has_sales ) { continue; }
+            $parent_managed = $product->is_type( 'variation' ) && 'parent' === $product->get_manage_stock( 'edit' );
+            $rows[] = array( 'product_id' => $product->get_id(), 'sku' => $product->get_sku(), 'product' => $product->get_name(), 'type' => $product->get_type(), 'category' => $this->products->categories_for_product( $parent_id ), 'price' => (float) $product->get_price(), 'stock' => $parent_managed ? __( 'Parent managed', 'woocommerce-advanced-reports' ) : ( $product->managing_stock() ? (int) $product->get_stock_quantity() : '' ), 'stock_status' => wc_get_product_stock_status_options()[ $product->get_stock_status() ] ?? $product->get_stock_status() );
         }
         return array( 'columns' => array( 'product_id' => __( 'Product ID', 'woocommerce-advanced-reports' ), 'sku' => __( 'SKU', 'woocommerce-advanced-reports' ), 'product' => __( 'Product', 'woocommerce-advanced-reports' ), 'type' => __( 'Type', 'woocommerce-advanced-reports' ), 'category' => __( 'Category', 'woocommerce-advanced-reports' ), 'price' => __( 'Current Price', 'woocommerce-advanced-reports' ), 'stock' => __( 'Stock', 'woocommerce-advanced-reports' ), 'stock_status' => __( 'Stock Status', 'woocommerce-advanced-reports' ) ), 'rows' => $rows, 'summary' => array() );
     }
@@ -309,18 +316,19 @@ final class AnalyticsService {
     public function inventory( ReportFilter $f ): array {
         $rows = array();
         $activity = $this->product_activity( $f );
-        $period_days = max( 1, (int) ceil( ( $f->to->getTimestamp() - $f->from->getTimestamp() + 1 ) / DAY_IN_SECONDS ) );
+        $period_days = max( 1, (int) $f->from->diff( $f->to )->days + 1 );
         foreach ( $this->products->iterate( $f ) as $product ) {
             $parent_id = $product->is_type( 'variation' ) ? $product->get_parent_id() : $product->get_id();
-            $qty = $product->managing_stock() ? $product->get_stock_quantity() : null;
+            $parent_managed = $product->is_type( 'variation' ) && 'parent' === $product->get_manage_stock( 'edit' );
+            $qty = ! $parent_managed && $product->managing_stock() ? $product->get_stock_quantity() : null;
             $retail = null !== $qty ? (float) $product->get_price() * (int) $qty : null;
             $a = $activity[ $product->get_id() ] ?? array( 'units' => 0, 'last_ts' => 0 );
             $avg_daily = $period_days > 0 ? (float) $a['units'] / $period_days : 0.0;
-            $coverage = null !== $qty && $avg_daily > 0 ? round( (int) $qty / $avg_daily, 1 ) : '';
+            $coverage = null !== $qty && (int) $qty > 0 && $avg_daily > 0 ? round( (int) $qty / $avg_daily, 1 ) : '';
             $rows[] = array(
                 'product_id' => $product->get_id(), 'product' => $product->get_name(), 'sku' => $product->get_sku(), 'type' => $product->get_type(),
-                'category' => $this->products->categories_for_product( $parent_id ), 'stock' => null === $qty ? __( 'Not managed', 'woocommerce-advanced-reports' ) : (int) $qty,
-                'stock_status' => wc_get_product_stock_status_options()[ $product->get_stock_status() ] ?? $product->get_stock_status(), 'low_stock' => $product->get_low_stock_amount(),
+                    'category' => $this->products->categories_for_product( $parent_id ), 'stock' => $parent_managed ? __( 'Parent managed', 'woocommerce-advanced-reports' ) : ( null === $qty ? __( 'Not managed', 'woocommerce-advanced-reports' ) : (int) $qty ),
+                'stock_status' => wc_get_product_stock_status_options()[ $product->get_stock_status() ] ?? $product->get_stock_status(), '_stock_status' => $product->get_stock_status(), 'low_stock' => $product->get_low_stock_amount(),
                 'backorders' => $product->get_backorders(), 'regular_price' => (float) $product->get_regular_price(), 'sale_price' => '' === $product->get_sale_price() ? '' : (float) $product->get_sale_price(),
                 'retail_value' => $retail, 'cost_value' => $this->product_cost_value( $product, $qty ), 'units_sold' => (int) $a['units'],
                 'last_sale' => $a['last_ts'] ? $this->calendar->format( (int) $a['last_ts'] ) : '', 'stock_coverage_days' => $coverage,
@@ -341,16 +349,16 @@ final class AnalyticsService {
 
     public function out_of_stock( ReportFilter $f ): array {
         $result = $this->inventory( $f );
-        $result['rows'] = array_values( array_filter( $result['rows'], static fn( $r ) => false !== stripos( (string) $r['stock_status'], 'out' ) || ( is_numeric( $r['stock'] ) && (int) $r['stock'] <= 0 ) ) );
+        $result['rows'] = array_values( array_filter( $result['rows'], static fn( $r ) => 'outofstock' === ( $r['_stock_status'] ?? '' ) || ( is_numeric( $r['stock'] ) && (int) $r['stock'] <= 0 ) ) );
         return $result;
     }
 
     public function dead_stock( ReportFilter $f ): array {
         $sales_filter = clone $f;
-        $sales_filter->from = ( new \DateTimeImmutable( 'now', wp_timezone() ) )->modify( '-' . $f->dead_stock_days . ' days' )->setTime( 0, 0, 0 );
+        $sales_filter->from = ( new \DateTimeImmutable( 'today', wp_timezone() ) )->modify( '-' . ( $f->dead_stock_days - 1 ) . ' days' );
         $sales_filter->to = new \DateTimeImmutable( 'now', wp_timezone() );
-        $sold = array();
-        foreach ( $this->aggregate_products( $sales_filter, false ) as $row ) { $sold[ (int) $row['product_id'] ] = (int) $row['quantity_sold']; }
+        $activity = $this->product_activity( $sales_filter );
+        $sold = array_map( static fn( $row ) => (int) $row['units'], $activity );
         $result = $this->inventory( $f );
         $result['columns']['units_sold_window'] = sprintf( __( 'Units Sold (%d days)', 'woocommerce-advanced-reports' ), $f->dead_stock_days );
         $result['rows'] = array_values( array_filter( array_map( static function ( $r ) use ( $sold ) {
@@ -372,13 +380,15 @@ final class AnalyticsService {
         foreach ( $this->orders->iterate( $f ) as $order ) {
             $currency = $order->get_currency();
             foreach ( $order->get_items( 'line_item' ) as $item ) {
+                if ( ! $this->orders->item_matches( $item, $f ) ) { continue; }
                 $terms = taxonomy_exists( $taxonomy ) ? wp_get_post_terms( $item->get_product_id(), $taxonomy ) : array();
                 if ( ! $terms || is_wp_error( $terms ) ) { $terms = array( (object) array( 'term_id' => 0, 'name' => __( 'Unassigned', 'woocommerce-advanced-reports' ) ) ); }
+                if ( 'product_cat' === $taxonomy && $f->category_ids ) { $allowed_categories = $f->category_ids_with_children(); $terms = array_values( array_filter( $terms, static fn( $term ) => in_array( (int) $term->term_id, $allowed_categories, true ) ) ); }
                 foreach ( $terms as $term ) {
                     $key = $term->term_id . '|' . $currency;
                     if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array( 'group' => $term->name, 'currency' => $currency, 'orders' => array(), 'units' => 0, 'gross_sales' => 0.0, 'refunds' => 0.0, 'net_sales' => 0.0 ); }
                     $groups[ $key ]['orders'][ $order->get_id() ] = true;
-                    $groups[ $key ]['units'] += (int) $item->get_quantity();
+                    $groups[ $key ]['units'] += max( 0, (int) $item->get_quantity() - abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) ) );
                     $groups[ $key ]['gross_sales'] += (float) $item->get_subtotal();
                     $refund_amount = abs( (float) $order->get_total_refunded_for_item( $item->get_id() ) );
                     $groups[ $key ]['refunds'] += $refund_amount;
@@ -387,7 +397,7 @@ final class AnalyticsService {
             }
         }
         foreach ( $groups as &$row ) { $row['orders'] = count( $row['orders'] ); } unset( $row );
-        usort( $groups, static fn( $a, $b ) => $b['net_sales'] <=> $a['net_sales'] );
+        usort( $groups, static fn( $a, $b ) => self::compare_currency_metric( $a, $b, 'net_sales' ) );
         return array( 'columns' => array( 'group' => $label, 'currency' => __( 'Currency', 'woocommerce-advanced-reports' ), 'orders' => __( 'Orders', 'woocommerce-advanced-reports' ), 'units' => __( 'Units', 'woocommerce-advanced-reports' ), 'gross_sales' => __( 'Gross Sales', 'woocommerce-advanced-reports' ), 'refunds' => __( 'Refunds', 'woocommerce-advanced-reports' ), 'net_sales' => __( 'Net Sales', 'woocommerce-advanced-reports' ) ), 'rows' => array_values( $groups ), 'summary' => array() );
     }
 
@@ -395,6 +405,7 @@ final class AnalyticsService {
         $groups = array();
         foreach ( $this->orders->iterate_refunds( $f ) as [ $refund, $order ] ) {
             foreach ( $refund->get_items( 'line_item' ) as $item ) {
+                if ( ! $this->orders->item_matches( $item, $f ) ) { continue; }
                 $product = $item->get_product();
                 $pid = $item->get_product_id(); $vid = $item->get_variation_id(); $currency = $order->get_currency();
                 $key = ( $vid ?: $pid ) . '|' . $currency;
@@ -404,10 +415,9 @@ final class AnalyticsService {
                 $groups[ $key ]['refund_amount'] += abs( (float) $item->get_total() + (float) $item->get_total_tax() );
             }
         }
-        $sales = $this->aggregate_products( $f, false ); $sold = array();
-        foreach ( $sales as $row ) { $sold[(int)($row['variation_id'] ?: $row['product_id']) . '|' . $row['currency']] = (int)$row['quantity_sold']; }
-        foreach ( $groups as $key => &$row ) { $base = $sold[$key] ?? 0; $row['refund_rate'] = ( $base + $row['quantity_refunded'] ) > 0 ? round( 100 * $row['quantity_refunded'] / ( $base + $row['quantity_refunded'] ), 1 ) : 0; } unset($row);
-        usort( $groups, static fn( $a, $b ) => $b['refund_amount'] <=> $a['refund_amount'] );
+        $sold = $this->product_quantities( $f );
+        foreach ( $groups as $key => &$row ) { $base = $sold[$key] ?? 0; $row['refund_rate'] = $base > 0 ? round( 100 * $row['quantity_refunded'] / $base, 1 ) : null; } unset($row);
+        usort( $groups, static fn( $a, $b ) => self::compare_currency_metric( $a, $b, 'refund_amount' ) );
         return array( 'columns' => array( 'product_id' => __( 'Product ID', 'woocommerce-advanced-reports' ), 'variation_id' => __( 'Variation ID', 'woocommerce-advanced-reports' ), 'sku' => __( 'SKU', 'woocommerce-advanced-reports' ), 'product' => __( 'Product', 'woocommerce-advanced-reports' ), 'currency' => __( 'Currency', 'woocommerce-advanced-reports' ), 'refund_count' => __( 'Refund Lines', 'woocommerce-advanced-reports' ), 'quantity_refunded' => __( 'Quantity Refunded', 'woocommerce-advanced-reports' ), 'refund_amount' => __( 'Refund Amount', 'woocommerce-advanced-reports' ), 'refund_rate' => __( 'Refund Rate %', 'woocommerce-advanced-reports' ) ), 'rows' => array_values( $groups ), 'summary' => array() );
     }
 
@@ -418,7 +428,7 @@ final class AnalyticsService {
 
     public function top_customers( ReportFilter $f ): array {
         $result = $this->customer_list( $f );
-        usort( $result['rows'], static fn( $a, $b ) => $b['net_spend'] <=> $a['net_spend'] );
+        usort( $result['rows'], static fn( $a, $b ) => self::compare_currency_metric( $a, $b, 'net_spend' ) );
         return $result;
     }
 
@@ -429,7 +439,7 @@ final class AnalyticsService {
             $registration = 'guest' === $customer['customer_type'] ? 'guest' : 'registered';
             $currency = $customer['currency'];
             $key = $type . '|' . $registration . '|' . $currency;
-            if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array( 'customer_segment' => ucfirst( $type ), 'registration' => ucfirst( $registration ), 'currency' => $currency, 'customers' => 0, 'orders' => 0, 'revenue' => 0.0 ); }
+            if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array( 'customer_segment' => 'new' === $type ? __( 'New', 'woocommerce-advanced-reports' ) : __( 'Returning', 'woocommerce-advanced-reports' ), 'registration' => 'guest' === $registration ? __( 'Guest', 'woocommerce-advanced-reports' ) : __( 'Registered', 'woocommerce-advanced-reports' ), 'currency' => $currency, 'customers' => 0, 'orders' => 0, 'revenue' => 0.0 ); }
             $groups[ $key ]['customers']++;
             $groups[ $key ]['orders'] += (int) $customer['orders'];
             $groups[ $key ]['revenue'] += (float) $customer['net_spend'];
@@ -440,7 +450,7 @@ final class AnalyticsService {
     public function customer_ltv( ReportFilter $f ): array {
         $groups = $this->aggregate_customers( $f, true );
         $rows = array_values( $groups );
-        usort( $rows, static fn( $a, $b ) => $b['net_spend'] <=> $a['net_spend'] );
+        usort( $rows, static fn( $a, $b ) => self::compare_currency_metric( $a, $b, 'net_spend' ) );
         return array( 'columns' => $this->customer_columns(), 'rows' => $rows, 'summary' => array(), 'note' => __( 'Lifetime values include qualifying order history up to the selected end date.', 'woocommerce-advanced-reports' ) );
     }
 
@@ -448,7 +458,7 @@ final class AnalyticsService {
         $groups = $this->aggregate_customers( $f, true );
         $rows = array();
         foreach ( $groups as $c ) {
-            $days = max( 0, (int) round( ( $c['last_order_ts'] - $c['first_order_ts'] ) / DAY_IN_SECONDS ) );
+            $days = $this->calendar_days_between( (int) $c['first_order_ts'], (int) $c['last_order_ts'] );
             $c['avg_days_between_orders'] = $c['orders'] > 1 ? round( $days / ( $c['orders'] - 1 ), 1 ) : '';
             $rows[] = $c;
         }
@@ -459,11 +469,9 @@ final class AnalyticsService {
 
     public function inactive_customers( ReportFilter $f ): array {
         $clone = clone $f;
-        $clone->to = new \DateTimeImmutable( 'now', wp_timezone() );
         $groups = $this->aggregate_customers( $clone, true );
-        $cutoff = $clone->to->modify( '-' . $f->inactive_days . ' days' )->getTimestamp();
-        $rows = array_values( array_filter( $groups, static fn( $c ) => $c['last_order_ts'] < $cutoff ) );
-        foreach ( $rows as &$row ) { $row['inactive_days'] = (int) floor( ( time() - $row['last_order_ts'] ) / DAY_IN_SECONDS ); } unset( $row );
+        $rows = array_values( array_filter( $groups, fn( $c ) => $this->calendar_days_between( (int) $c['last_order_ts'], $clone->to->getTimestamp() ) >= $f->inactive_days ) );
+        foreach ( $rows as &$row ) { $row['inactive_days'] = $this->calendar_days_between( (int) $row['last_order_ts'], $clone->to->getTimestamp() ); } unset( $row );
         usort( $rows, static fn( $a, $b ) => $b['inactive_days'] <=> $a['inactive_days'] );
         $columns = $this->customer_columns(); $columns['inactive_days'] = __( 'Inactive Days', 'woocommerce-advanced-reports' );
         return array( 'columns' => $columns, 'rows' => $rows, 'summary' => array() );
@@ -472,31 +480,38 @@ final class AnalyticsService {
     public function rfm( ReportFilter $f ): array {
         $groups = array_values( $this->aggregate_customers( $f, true ) );
         if ( ! $groups ) { return array( 'columns' => array(), 'rows' => array(), 'summary' => array() ); }
-        $recencies = $frequencies = $monetaries = array();
+        $currency_groups = array();
         foreach ( $groups as $c ) {
-            $recencies[] = max( 0, (int) floor( ( $f->to->getTimestamp() - $c['last_order_ts'] ) / DAY_IN_SECONDS ) );
-            $frequencies[] = (int) $c['orders'];
-            $monetaries[] = (float) $c['net_spend'];
+            $currency_groups[ (string) $c['currency'] ][] = $c;
         }
-        sort( $recencies ); sort( $frequencies ); sort( $monetaries );
         $rows = array();
-        foreach ( $groups as $c ) {
-            $recency = max( 0, (int) floor( ( $f->to->getTimestamp() - $c['last_order_ts'] ) / DAY_IN_SECONDS ) );
-            $r = 6 - $this->quintile( $recency, $recencies );
-            $freq = $this->quintile( (int) $c['orders'], $frequencies );
-            $mon = $this->quintile( (float) $c['net_spend'], $monetaries );
-            $score = "{$r}{$freq}{$mon}";
-            $rows[] = array_merge( $c, array( 'recency_days' => $recency, 'r_score' => $r, 'f_score' => $freq, 'm_score' => $mon, 'rfm_score' => $score, 'segment' => $this->rfm_segment( $r, $freq, $mon ) ) );
+        foreach ( $currency_groups as $currency_customers ) {
+            $recencies = $frequencies = $monetaries = array();
+            foreach ( $currency_customers as $customer ) {
+                $recencies[] = $this->calendar_days_between( (int) $customer['last_order_ts'], $f->to->getTimestamp() );
+                $frequencies[] = (int) $customer['orders'];
+                $monetaries[] = (float) $customer['net_spend'];
+            }
+            sort( $recencies ); sort( $frequencies ); sort( $monetaries );
+            foreach ( $currency_customers as $customer ) {
+                $recency = $this->calendar_days_between( (int) $customer['last_order_ts'], $f->to->getTimestamp() );
+                $r = 6 - $this->quintile( $recency, $recencies );
+                $freq = $this->quintile( (int) $customer['orders'], $frequencies );
+                $mon = $this->quintile( (float) $customer['net_spend'], $monetaries );
+                $score = "{$r}{$freq}{$mon}";
+                $rows[] = array_merge( $customer, array( 'recency_days' => $recency, 'r_score' => $r, 'f_score' => $freq, 'm_score' => $mon, 'rfm_score' => $score, 'segment' => $this->rfm_segment( $r, $freq, $mon ) ) );
+            }
         }
-        usort( $rows, static fn( $a, $b ) => (int) $b['rfm_score'] <=> (int) $a['rfm_score'] );
-        return array( 'columns' => array_merge( $this->customer_columns(), array( 'recency_days' => __( 'Recency Days', 'woocommerce-advanced-reports' ), 'r_score' => 'R', 'f_score' => 'F', 'm_score' => 'M', 'rfm_score' => __( 'RFM Score', 'woocommerce-advanced-reports' ), 'segment' => __( 'Segment', 'woocommerce-advanced-reports' ) ) ), 'rows' => $rows, 'summary' => array() );
+        usort( $rows, static fn( $a, $b ) => self::compare_currency_metric( $a, $b, 'rfm_score' ) );
+        return array( 'columns' => array_merge( $this->customer_columns(), array( 'recency_days' => __( 'Recency Days', 'woocommerce-advanced-reports' ), 'r_score' => 'R', 'f_score' => 'F', 'm_score' => 'M', 'rfm_score' => __( 'RFM Score', 'woocommerce-advanced-reports' ), 'segment' => __( 'Segment', 'woocommerce-advanced-reports' ) ) ), 'rows' => $rows, 'summary' => array(), 'note' => __( 'RFM quintiles are calculated independently for each currency.', 'woocommerce-advanced-reports' ) );
     }
 
     public function cohorts( ReportFilter $f ): array {
-        $customers = $this->aggregate_customers( $f, true, true );
+        $customers = $this->aggregate_customers( $f, true );
         $groups = array();
         foreach ( $customers as $c ) {
-            $cohort = wp_date( 'Y-m', $c['first_order_ts'], wp_timezone() );
+            if ( (int) $c['first_order_ts'] < $f->from->getTimestamp() ) { continue; }
+            $cohort = $this->calendar->format( $c['first_order_ts'], 'Y-m' );
             $currency = $c['currency'];
             $key = $cohort . '|' . $currency;
             if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array( 'cohort' => $cohort, 'currency' => $currency, 'customers' => 0, 'orders' => 0, 'lifetime_revenue' => 0.0, 'repeat_customers' => 0 ); }
@@ -515,17 +530,17 @@ final class AnalyticsService {
         foreach ( $this->orders->iterate( $f ) as $order ) {
             $currency = $order->get_currency();
             foreach ( $order->get_items( 'line_item' ) as $item ) {
+                if ( ! $this->orders->item_matches( $item, $f ) ) { continue; }
                 $pid = $item->get_product_id(); $vid = $item->get_variation_id();
                 if ( $variations_only && ! $vid ) { continue; }
-                $product = $item->get_product();
-                $key = ( $vid ?: $pid ) . '|' . $currency;
+                $product = $variations_only ? $item->get_product() : wc_get_product( $pid );
+                $key = ( $variations_only ? $vid : $pid ) . '|' . $currency;
                 if ( ! isset( $groups[ $key ] ) ) {
-                    $parent = wc_get_product( $pid );
                     $groups[ $key ] = array(
-                        'product_id' => $pid, 'variation_id' => $vid ?: '', 'sku' => $product ? $product->get_sku() : '', 'product' => $item->get_name(),
+                        'product_id' => $pid, 'variation_id' => $variations_only ? $vid : '', 'sku' => $product ? $product->get_sku() : '', 'product' => $variations_only || ! $product ? $item->get_name() : $product->get_name(),
                         'type' => $product ? $product->get_type() : '', 'category' => $this->products->categories_for_product( $pid ), 'currency' => $currency,
                         'quantity_sold' => 0, 'orders' => array(), 'gross_sales' => 0.0, 'discounts' => 0.0, 'refunds' => 0.0, 'net_sales' => 0.0,
-                        'avg_selling_price' => 0.0, 'regular_price' => $product ? (float) $product->get_regular_price() : 0.0, 'sale_price' => $product && '' !== $product->get_sale_price() ? (float) $product->get_sale_price() : '',
+                        'avg_selling_price' => 0.0, 'regular_price' => $product && '' !== $product->get_regular_price() ? (float) $product->get_regular_price() : '', 'sale_price' => $product && '' !== $product->get_sale_price() ? (float) $product->get_sale_price() : '',
                         'stock' => $product && $product->managing_stock() ? $product->get_stock_quantity() : '', 'stock_status' => $product ? ( wc_get_product_stock_status_options()[ $product->get_stock_status() ] ?? $product->get_stock_status() ) : '',
                     );
                 }
@@ -548,11 +563,10 @@ final class AnalyticsService {
         return array_values( $groups );
     }
 
-    private function aggregate_customers( ReportFilter $f, bool $all_history, bool $include_cohorts_outside_range = false ): array {
+    private function aggregate_customers( ReportFilter $f, bool $all_history ): array {
         $groups = array();
-        $iterator = $all_history ? $this->orders->iterate_all_until( $f->to, $f->statuses ?: array( 'processing', 'completed' ) ) : $this->orders->iterate( $f );
+        $iterator = $all_history ? $this->orders->iterate_all_until( $f ) : $this->orders->iterate( $f );
         foreach ( $iterator as $order ) {
-            if ( $all_history && ! $include_cohorts_outside_range && $f->currency && $order->get_currency() !== $f->currency ) { continue; }
             $identity = $this->customer_identity( $order );
             $currency = $order->get_currency();
             $key = $identity . '|' . $currency;
@@ -573,12 +587,20 @@ final class AnalyticsService {
             $groups[ $key ]['refunds'] += $m['refunds'];
             $groups[ $key ]['net_spend'] += $m['net_sales'];
             if ( $ts && $ts < $groups[ $key ]['first_order_ts'] ) { $groups[ $key ]['first_order_ts'] = $ts; $groups[ $key ]['first_order'] = $this->calendar->format( $ts ); }
-            if ( $ts > $groups[ $key ]['last_order_ts'] ) { $groups[ $key ]['last_order_ts'] = $ts; $groups[ $key ]['last_order'] = $this->calendar->format( $ts ); }
+            if ( $ts > $groups[ $key ]['last_order_ts'] ) {
+                $groups[ $key ]['last_order_ts'] = $ts;
+                $groups[ $key ]['last_order'] = $this->calendar->format( $ts );
+                $groups[ $key ]['name'] = trim( $order->get_formatted_billing_full_name() );
+                $groups[ $key ]['email'] = Format::mask_email( (string) $order->get_billing_email() );
+                $groups[ $key ]['phone'] = Format::mask_phone( (string) $order->get_billing_phone() );
+                $groups[ $key ]['country'] = $order->get_billing_country();
+                $groups[ $key ]['city'] = $order->get_billing_city();
+            }
         }
         foreach ( $groups as &$row ) {
             if ( ! $all_history ) {
                 $identity = $row['customer_id'] ? (string) $row['customer_id'] : ( 0 === strpos( (string) $row['_identity'], 'e:' ) ? substr( (string) $row['_identity'], 2 ) : '' );
-                $first = $identity ? $this->orders->first_order_timestamp( $identity ) : null;
+                $first = $identity ? $this->orders->first_order_timestamp( $identity, $f->statuses ) : null;
                 if ( $first ) { $row['first_order_ts'] = $first; $row['first_order'] = $this->calendar->format( $first ); }
             }
             $row['aov'] = $row['orders'] ? $row['net_spend'] / $row['orders'] : 0;
@@ -608,6 +630,9 @@ final class AnalyticsService {
     }
 
     private function summary_from_currency_groups( array $groups ): array {
+        if ( ! $groups ) {
+            return array( 'currency' => '', 'gross_sales' => 0.0, 'net_sales' => 0.0, 'orders' => 0, 'items' => 0, 'refunds' => 0.0, 'discounts' => 0.0, 'shipping' => 0.0, 'tax' => 0.0, 'aov' => 0.0 );
+        }
         if ( 1 === count( $groups ) ) {
             $row = reset( $groups );
             return array( 'currency' => $row['currency'], 'gross_sales' => $row['gross_sales'], 'net_sales' => $row['net_sales'], 'orders' => $row['orders'], 'items' => $row['items'], 'refunds' => $row['refunds'], 'discounts' => $row['discounts'], 'shipping' => $row['shipping'], 'tax' => $row['tax'], 'aov' => $row['aov'] );
@@ -644,6 +669,13 @@ final class AnalyticsService {
         return $email ? 'e:' . $email : 'o:' . $order->get_id();
     }
 
+    private static function compare_currency_metric( array $a, array $b, string $metric, bool $descending = true ): int {
+        $currency_order = strcmp( (string) ( $a['currency'] ?? '' ), (string) ( $b['currency'] ?? '' ) );
+        if ( 0 !== $currency_order ) { return $currency_order; }
+        $metric_order = (float) ( $a[ $metric ] ?? 0 ) <=> (float) ( $b[ $metric ] ?? 0 );
+        return $descending ? -$metric_order : $metric_order;
+    }
+
     private function product_sales_columns(): array {
         return array( 'product_id' => __( 'Product ID', 'woocommerce-advanced-reports' ), 'variation_id' => __( 'Variation ID', 'woocommerce-advanced-reports' ), 'sku' => __( 'SKU', 'woocommerce-advanced-reports' ), 'product' => __( 'Product', 'woocommerce-advanced-reports' ), 'type' => __( 'Type', 'woocommerce-advanced-reports' ), 'category' => __( 'Category', 'woocommerce-advanced-reports' ), 'currency' => __( 'Currency', 'woocommerce-advanced-reports' ), 'quantity_sold' => __( 'Quantity Sold', 'woocommerce-advanced-reports' ), 'orders' => __( 'Orders', 'woocommerce-advanced-reports' ), 'gross_sales' => __( 'Gross Sales', 'woocommerce-advanced-reports' ), 'discounts' => __( 'Discounts', 'woocommerce-advanced-reports' ), 'refunds' => __( 'Refunds', 'woocommerce-advanced-reports' ), 'net_sales' => __( 'Net Sales', 'woocommerce-advanced-reports' ), 'avg_selling_price' => __( 'Average Selling Price', 'woocommerce-advanced-reports' ), 'regular_price' => __( 'Regular Price', 'woocommerce-advanced-reports' ), 'sale_price' => __( 'Sale Price', 'woocommerce-advanced-reports' ), 'stock' => __( 'Current Stock', 'woocommerce-advanced-reports' ), 'stock_status' => __( 'Stock Status', 'woocommerce-advanced-reports' ) );
     }
@@ -658,6 +690,11 @@ final class AnalyticsService {
 
     private function product_cost_value( \WC_Product $product, $qty ) {
         if ( null === $qty ) { return ''; }
+        if ( method_exists( $product, 'get_cogs_value' ) && method_exists( $product, 'get_cogs_total_value' ) ) {
+            $defined_cogs = $product->get_cogs_value();
+            $effective_cogs = (float) $product->get_cogs_total_value();
+            if ( null !== $defined_cogs || 0.0 !== $effective_cogs ) { return $effective_cogs * (int) $qty; }
+        }
         $cost = '';
         foreach ( array( '_cogs_total_value', '_wc_cog_cost', '_alg_wc_cog_cost' ) as $meta_key ) {
             $value = $product->get_meta( $meta_key, true );
@@ -671,6 +708,7 @@ final class AnalyticsService {
         foreach ( $this->orders->iterate( $f ) as $order ) {
             $ts = $order->get_date_created() ? $order->get_date_created()->getTimestamp() : 0;
             foreach ( $order->get_items( 'line_item' ) as $item ) {
+                if ( ! $this->orders->item_matches( $item, $f ) ) { continue; }
                 $qty = max( 0, (int) $item->get_quantity() - abs( (int) $order->get_qty_refunded_for_item( $item->get_id() ) ) );
                 foreach ( array_unique( array_filter( array( (int) $item->get_product_id(), (int) $item->get_variation_id() ) ) ) as $id ) {
                     if ( ! isset( $activity[ $id ] ) ) { $activity[ $id ] = array( 'units' => 0, 'last_ts' => 0 ); }
@@ -682,11 +720,32 @@ final class AnalyticsService {
         return $activity;
     }
 
+    private function product_quantities( ReportFilter $f ): array {
+        $quantities = array();
+        foreach ( $this->orders->iterate( $f ) as $order ) {
+            $currency = $order->get_currency();
+            foreach ( $order->get_items( 'line_item' ) as $item ) {
+                if ( ! $this->orders->item_matches( $item, $f ) ) { continue; }
+                $product_id = (int) ( $item->get_variation_id() ?: $item->get_product_id() );
+                $key = $product_id . '|' . $currency;
+                $quantities[ $key ] = ( $quantities[ $key ] ?? 0 ) + max( 0, (int) $item->get_quantity() );
+            }
+        }
+        return $quantities;
+    }
+
     private function customer_registration_date( int $user_id ): string {
         if ( ! $user_id ) { return ''; }
         $user = get_userdata( $user_id );
         if ( ! $user || ! $user->user_registered ) { return ''; }
         return $this->calendar->format( $user->user_registered );
+    }
+
+    private function calendar_days_between( int $from_timestamp, int $to_timestamp ): int {
+        $timezone = wp_timezone();
+        $from = ( new \DateTimeImmutable( '@' . $from_timestamp ) )->setTimezone( $timezone )->setTime( 0, 0, 0 );
+        $to = ( new \DateTimeImmutable( '@' . $to_timestamp ) )->setTimezone( $timezone )->setTime( 0, 0, 0 );
+        return $from <= $to ? (int) $from->diff( $to )->days : 0;
     }
 
     private function quintile( $value, array $sorted ): int {
@@ -699,8 +758,8 @@ final class AnalyticsService {
     private function rfm_segment( int $r, int $f, int $m ): string {
         if ( $r >= 4 && $f >= 4 && $m >= 4 ) { return __( 'Champions', 'woocommerce-advanced-reports' ); }
         if ( $r >= 3 && $f >= 4 ) { return __( 'Loyal Customers', 'woocommerce-advanced-reports' ); }
-        if ( $r >= 4 && $f <= 3 ) { return __( 'Potential Loyalists', 'woocommerce-advanced-reports' ); }
         if ( $r >= 4 && 1 === $f ) { return __( 'Recent Customers', 'woocommerce-advanced-reports' ); }
+        if ( $r >= 4 && $f <= 3 ) { return __( 'Potential Loyalists', 'woocommerce-advanced-reports' ); }
         if ( $r <= 2 && $f >= 3 ) { return __( 'At Risk', 'woocommerce-advanced-reports' ); }
         if ( $r <= 2 && $f <= 2 ) { return __( 'Lost Customers', 'woocommerce-advanced-reports' ); }
         return __( 'Needs Attention', 'woocommerce-advanced-reports' );

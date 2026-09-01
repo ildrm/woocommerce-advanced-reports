@@ -15,6 +15,7 @@ final class Assets {
         wp_localize_script( 'wcar-admin', 'WCARAdmin', array(
             'printTitle' => __( 'Print report', 'woocommerce-advanced-reports' ),
             'confirmDelete' => __( 'Delete this item?', 'woocommerce-advanced-reports' ),
+            'noData' => __( 'No data', 'woocommerce-advanced-reports' ),
         ) );
     }
 }

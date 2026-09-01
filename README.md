@@ -11,6 +11,8 @@ A self-contained WooCommerce reporting plugin for WordPress with product, order,
 - No `ZipArchive` requirement: XLSX files are created by the bundled minimal ZIP writer
 - WooCommerce Action Scheduler is used when available; WordPress Cron is used as a fallback where implemented
 
+Release 1.0.1 was smoke-tested on WordPress 7.0.4, WooCommerce 11.0.1, PHP 8.5.9, and both legacy and HPOS order storage.
+
 ## Admin menu
 
 - Reports → Overview
@@ -38,7 +40,7 @@ A self-contained WooCommerce reporting plugin for WordPress with product, order,
 - Brand Sales (supports common registered brand taxonomies)
 - Product Refunds and refund rate
 
-Inventory reports include current stock, stock state, low-stock threshold, backorders, prices, retail inventory value, recognized cost value where available, units sold in the selected period, last sale in the selected period and estimated stock coverage days.
+Inventory reports include parent products and variations, current stock, parent-managed stock state, low-stock threshold, backorders, prices, retail inventory value, recognized cost value where available, units sold in the selected period, last sale in the selected period and estimated stock coverage days.
 
 ## Order reports
 
@@ -65,7 +67,7 @@ To keep results deterministic:
 - **Net Collected**: order total minus recorded refunds.
 - **AOV**: Net Collected divided by qualifying order count.
 
-Totals are never silently combined across different currencies. Select a currency to obtain single-currency KPIs; otherwise the dashboard/report returns a currency breakdown.
+Totals are never silently combined across different currencies. Select a currency to obtain single-currency KPIs; otherwise the dashboard/report returns a currency breakdown. Monetary rankings and RFM quintiles are calculated independently within each currency.
 
 ## Customer reports
 
@@ -78,7 +80,7 @@ Totals are never silently combined across different currencies. Select a currenc
 - RFM Segmentation
 - Customer Cohorts
 
-Registered customers are keyed by WooCommerce/WordPress customer ID. Guest customers are normalized by billing email when available. Privacy settings can display full, partially masked or hidden email/phone data.
+Registered customers are keyed by WooCommerce/WordPress customer ID. Guest customers are normalized by billing email when available. Email/phone privacy settings can display those fields in full, partially masked or hidden form. Cohort rows are limited to customers whose first qualifying purchase falls in the selected range, while their qualifying history is measured through the selected end date.
 
 ## Calendars
 
@@ -115,6 +117,8 @@ Shared filters include:
 
 Filters are represented in the URL, making report views bookmarkable. The table UI also includes per-report column visibility preferences stored in the browser.
 
+Different filter types are combined with AND semantics. For example, when both a product and a category are selected, an order item must match both filters; product reports include only matching line items. Selecting a parent product category also includes its descendant categories.
+
 ## CSV / XLSX / Print
 
 Every report page provides:
@@ -122,7 +126,7 @@ Every report page provides:
 - CSV export, UTF-8 with optional BOM
 - Genuine XLSX export
 - XLSX generation without the optional PHP `ZipArchive` extension
-- Background queued XLSX export for large reports
+- Background queued export in the configured default format for large reports
 - Print view using dedicated `@media print` styling
 - Store/report header and optional print logo
 
@@ -130,9 +134,9 @@ CSV output protects cells that begin with spreadsheet formula characters (`=`, `
 
 ## Background exports and export history
 
-The **Queue XLSX** action creates a background job. WooCommerce Action Scheduler is used when available; `wp_schedule_single_event()` is the fallback. Generated exports are tracked in Export History and expire after 30 days. Expired files are cleaned by a daily task.
+The **Queue CSV/XLSX** action (based on the configured default format) creates a background job. WooCommerce Action Scheduler is used when available; `wp_schedule_single_event()` is the fallback. Generated exports are tracked in Export History and expire after 30 days. Expired files are cleaned by a daily task.
 
-Files are stored under `wp-content/wcar-private` with randomized filenames, an `index.php` deny response and Apache `.htaccess` denial. Downloads are served through authenticated, nonce-protected admin endpoints rather than public file URLs.
+Files are stored under `wp-content/wcar-private` (in per-site subdirectories on multisite) with randomized filenames, an `index.php` deny response, Apache `.htaccess` denial and IIS `web.config` denial. Network activation, deactivation and uninstall process each site independently. Downloads are served through authenticated, nonce-protected admin endpoints rather than public file URLs.
 
 ## Saved reports
 
@@ -150,14 +154,15 @@ Schedules may use fixed current dates or rolling periods. Rolling schedules use:
 
 - Daily: yesterday
 - Weekly: previous 7 days
-- Monthly: previous calendar month
+- Monthly: previous month in the active Gregorian or Jalali calendar
 
-Action Scheduler is used for recurring jobs when available. WordPress Cron performs an hourly due-schedule check as a fallback.
+Action Scheduler is used for queued occurrences when available. Each occurrence advances to and queues the next site-timezone occurrence, which prevents duplicate email retries and keeps daily, weekly and monthly delivery stable across daylight-saving changes. WordPress Cron also performs an hourly due-schedule check and recovers missing queue actions.
 
 ## Performance
 
 - Order access uses `wc_get_orders()` in batches with pagination.
 - Report results use transient caching with configurable TTL.
+- Cache keys include report-affecting settings, locale, site timezone and a version token, so configuration changes and concurrent invalidation cannot reuse stale formatted or unmasked data.
 - Expensive aggregate caches are invalidated when relevant order, refund, product or stock events occur.
 - UI tables are paginated after aggregation.
 - XLSX worksheet XML is written to a temporary file before packaging, avoiding construction of one giant worksheet XML string in PHP memory.
@@ -190,6 +195,8 @@ Reports are registered in `WCAR\Reports\ReportRegistry`. Extensions can modify t
 - `wcar_report_columns`
 - `wcar_jalali_month_names`
 
+An entry added through `wcar_register_reports` must supply a `group` (`dashboard`, `products`, `orders`, or `customers`) and `title`, plus either the name of a built-in analytics `method` or a callable `callback`. A callback receives the canonical `ReportFilter` and report ID and must return the standard report array; malformed definitions, columns, rows, summaries, and messages are discarded safely.
+
 The browser, print and export surfaces are fed by the same report engine to avoid different calculations for different output formats.
 
 ## Installation
@@ -201,11 +208,36 @@ The browser, print and export surfaces are fed by the same report engine to avoi
 
 ## Cost-of-goods note
 
-WooCommerce stores do not have one universal historical cost field across all installations. Inventory Cost Value is only calculated when the product exposes a recognized cost meta value (`_cogs_total_value`, `_wc_cog_cost`, or `_alg_wc_cog_cost`). The plugin deliberately leaves cost/profit-derived values blank when no trustworthy cost value exists.
+WooCommerce stores do not have one universal historical cost field across all installations. Inventory Cost Value uses WooCommerce's COGS product API when available and otherwise recognizes the `_cogs_total_value`, `_wc_cog_cost`, and `_alg_wc_cog_cost` product meta conventions. The plugin deliberately leaves cost/profit-derived values blank when no trustworthy cost value exists.
 
 ## Security
 
-The plugin uses WordPress capabilities and nonces for report actions, sanitizes report inputs, escapes admin output, avoids direct order-table SQL, protects private export paths, validates export ownership, and mitigates CSV formula injection. Customer PII visibility is configurable.
+The plugin uses WordPress capabilities and nonces for report actions, sanitizes report inputs, escapes admin output, avoids direct order-table SQL, protects private export paths, validates export ownership, and mitigates CSV formula injection. Customer email/phone visibility is configurable.
+
+Report export and scheduling require both the export capability and the capability for the selected report group. Background work rechecks the owner's current permissions before processing.
+
+## Development and verification
+
+The repository includes a dependency-free regression suite for date parsing, filter canonicalization, permission mapping, CSV/XLSX safety, report segmentation and schedule timing:
+
+```bash
+php tests/run.php
+```
+
+GitHub Actions runs the dependency-free regression suite and lints every PHP file on PHP 8.1 through 8.5. This checks the plugin code itself; supported WordPress/PHP combinations still follow the WordPress compatibility matrix.
+
+## Changelog
+
+### 1.0.1
+
+- Fixed report-capability bypasses in exports and scheduled reports.
+- Fixed strict Gregorian/Jalali input handling and canonical saved/fixed date ranges.
+- Fixed product/variation aggregation, combined product/category filters, refund scoping, lifetime filters, Jalali cohorts and RFM segmentation.
+- Fixed settings-aware privacy caches, stale first-order caches and cache invalidation.
+- Hardened CSV/XLSX generation, private downloads, queued-export claiming and failure reporting.
+- Added duplicate-safe scheduled delivery, permission rechecks, failure visibility and job reconciliation.
+- Added plugin-owned uninstall/deactivation cleanup, database indexes, regression tests and CI.
+- Declared and smoke-tested WooCommerce HPOS compatibility.
 
 ## License
 

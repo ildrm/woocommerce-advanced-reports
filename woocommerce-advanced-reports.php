@@ -3,7 +3,7 @@
  * Plugin Name: WooCommerce Advanced Reports
  * Plugin URI: https://github.com/ildrm/woocommerce-advanced-reports
  * Description: Comprehensive WooCommerce reporting with Product, Order and Customer analytics, Jalali/Gregorian dates, CSV/XLSX export, printing, saved reports and scheduled reports.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Shahin Ilderemi
  * Author URI:  https://ildrm.com
  * Requires at least: 6.5
@@ -11,16 +11,23 @@
  * Requires Plugins: woocommerce
  * License: MIT
  * WC requires at least: 8.2
+ * WC tested up to: 11.0
  * Text Domain: woocommerce-advanced-reports
  * Domain Path: /languages
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WCAR_VERSION', '1.0.0' );
+define( 'WCAR_VERSION', '1.0.1' );
 define( 'WCAR_FILE', __FILE__ );
 define( 'WCAR_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WCAR_URL', plugin_dir_url( __FILE__ ) );
+
+add_action( 'before_woocommerce_init', static function (): void {
+    if ( class_exists( '\\Automattic\\WooCommerce\\Utilities\\FeaturesUtil' ) ) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', WCAR_FILE, true );
+    }
+} );
 
 spl_autoload_register(
     static function ( string $class ): void {

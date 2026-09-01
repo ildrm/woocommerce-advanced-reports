@@ -46,12 +46,20 @@ final class Plugin {
         $saved->register();
         $scheduled->register();
         $exports->register();
-        add_action( 'admin_post_wcar_clear_cache', static function () use ( $engine ): void { if ( ! current_user_can( \WCAR\Security\Capabilities::SETTINGS ) ) { wp_die( esc_html__( 'Permission denied.', 'woocommerce-advanced-reports' ) ); } check_admin_referer( 'wcar_clear_cache' ); $engine->flush_cache(); wp_safe_redirect( admin_url( 'admin.php?page=wcar-report-settings&wcar_cache_cleared=1' ) ); exit; } );
+        add_action( 'admin_post_wcar_clear_cache', static function () use ( $engine ): void { if ( ! current_user_can( \WCAR\Security\Capabilities::SETTINGS ) ) { wp_die( esc_html__( 'Permission denied.', 'woocommerce-advanced-reports' ) ); } if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) { wp_die( esc_html__( 'Invalid request method.', 'woocommerce-advanced-reports' ) ); } check_admin_referer( 'wcar_clear_cache' ); $engine->flush_cache(); wp_safe_redirect( admin_url( 'admin.php?page=wcar-report-settings&wcar_cache_cleared=1' ) ); exit; } );
 
         add_action( 'woocommerce_order_status_changed', array( $engine, 'flush_cache' ) );
         add_action( 'woocommerce_new_order', array( $engine, 'flush_cache' ) );
+        add_action( 'woocommerce_update_order', array( $engine, 'flush_cache' ) );
+        add_action( 'woocommerce_delete_order', array( $engine, 'flush_cache' ) );
+        add_action( 'woocommerce_trash_order', array( $engine, 'flush_cache' ) );
+        add_action( 'woocommerce_untrash_order', array( $engine, 'flush_cache' ) );
         add_action( 'woocommerce_refund_created', array( $engine, 'flush_cache' ) );
         add_action( 'save_post_product', array( $engine, 'flush_cache' ) );
+        add_action( 'save_post_product_variation', array( $engine, 'flush_cache' ) );
+        add_action( 'woocommerce_update_product', array( $engine, 'flush_cache' ) );
+        add_action( 'woocommerce_update_product_variation', array( $engine, 'flush_cache' ) );
+        add_action( 'woocommerce_delete_product', array( $engine, 'flush_cache' ) );
         add_action( 'woocommerce_product_set_stock', array( $engine, 'flush_cache' ) );
         add_action( 'woocommerce_variation_set_stock', array( $engine, 'flush_cache' ) );
     }
