@@ -19,20 +19,29 @@ final class Calendar {
         $timezone = wp_timezone();
         try {
             if ( 'jalali' === $this->type() ) {
-                $parts = preg_split( '/[-\/.]/', $date );
-                if ( 3 !== count( $parts ) ) {
+                if ( ! preg_match( '/^(\d{1,4})[-\/.](\d{1,2})[-\/.](\d{1,2})$/', $date, $matches ) ) {
                     return null;
                 }
-                [ $jy, $jm, $jd ] = array_map( 'intval', $parts );
+                [ $jy, $jm, $jd ] = array_map( 'intval', array_slice( $matches, 1 ) );
                 [ $gy, $gm, $gd ] = self::jalali_to_gregorian( $jy, $jm, $jd );
                 $time = $end_of_day ? '23:59:59' : '00:00:00';
                 return new DateTimeImmutable( sprintf( '%04d-%02d-%02d %s', $gy, $gm, $gd, $time ), $timezone );
+            }
+            if ( ! preg_match( '/^(\d{4})-(\d{2})-(\d{2})$/', $date, $matches ) || ! checkdate( (int) $matches[2], (int) $matches[3], (int) $matches[1] ) ) {
+                return null;
             }
             $time = $end_of_day ? ' 23:59:59' : ' 00:00:00';
             return new DateTimeImmutable( $date . $time, $timezone );
         } catch ( Exception $e ) {
             return null;
         }
+    }
+
+    public function format_input( ?DateTimeInterface $date ): string {
+        if ( ! $date ) {
+            return '';
+        }
+        return 'jalali' === $this->type() ? $this->format( $date, 'Y/m/d' ) : wp_date( 'Y-m-d', $date->getTimestamp(), wp_timezone() );
     }
 
     public function format( $date, string $format = '' ): string {
@@ -62,14 +71,21 @@ final class Calendar {
         $months_en = array( 1 => 'Farvardin', 'Ordibehesht', 'Khordad', 'Tir', 'Mordad', 'Shahrivar', 'Mehr', 'Aban', 'Azar', 'Dey', 'Bahman', 'Esfand' );
         $months_fa = array( 1 => 'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور', 'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند' );
         $months = 0 === strpos( determine_locale(), 'fa' ) ? $months_fa : $months_en;
-        $months = apply_filters( 'wcar_jalali_month_names', $months );
+        $filtered_months = apply_filters( 'wcar_jalali_month_names', $months );
+        if ( is_array( $filtered_months ) ) {
+            foreach ( $filtered_months as $month_number => $month_name ) {
+                if ( isset( $months[ $month_number ] ) && is_scalar( $month_name ) ) { $months[ $month_number ] = (string) $month_name; }
+            }
+        }
         $map = array(
             'Y' => sprintf( '%04d', $jy ), 'y' => sprintf( '%02d', $jy % 100 ), 'm' => sprintf( '%02d', $jm ), 'n' => (string) $jm,
-            'd' => sprintf( '%02d', $jd ), 'j' => (string) $jd, 'F' => $months[ $jm ] ?? (string) $jm, 'M' => substr( $months[ $jm ] ?? (string) $jm, 0, 3 ),
+            'd' => sprintf( '%02d', $jd ), 'j' => (string) $jd, 'F' => $months[ $jm ] ?? (string) $jm, 'M' => function_exists( 'mb_substr' ) ? mb_substr( $months[ $jm ] ?? (string) $jm, 0, 3 ) : substr( $months[ $jm ] ?? (string) $jm, 0, 3 ),
             'H' => $dt->format( 'H' ), 'G' => $dt->format( 'G' ), 'i' => $dt->format( 'i' ), 's' => $dt->format( 's' ),
         );
         $out = ''; $escape = false;
-        foreach ( preg_split( '//u', $fmt, -1, PREG_SPLIT_NO_EMPTY ) as $ch ) {
+        $format_characters = preg_split( '//u', $fmt, -1, PREG_SPLIT_NO_EMPTY );
+        if ( ! is_array( $format_characters ) ) { return ''; }
+        foreach ( $format_characters as $ch ) {
             if ( $escape ) { $out .= $ch; $escape = false; continue; }
             if ( '\\' === $ch ) { $escape = true; continue; }
             $out .= $map[ $ch ] ?? $ch;
@@ -100,7 +116,7 @@ final class Calendar {
     }
 
     public static function jalali_to_gregorian( int $jy, int $jm, int $jd ): array {
-        if ( $jm < 1 || $jm > 12 || $jd < 1 || $jd > 31 ) {
+        if ( $jy < 1 || $jm < 1 || $jm > 12 || $jd < 1 || $jd > 31 ) {
             throw new \InvalidArgumentException( 'Invalid Jalali date.' );
         }
         // Invert the tested Gregorian→Jalali conversion over the narrow

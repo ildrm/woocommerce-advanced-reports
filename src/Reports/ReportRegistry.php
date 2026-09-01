@@ -43,7 +43,23 @@ final class ReportRegistry {
             'rfm' => array( 'group' => 'customers', 'title' => __( 'RFM Segmentation', 'woocommerce-advanced-reports' ), 'method' => 'rfm' ),
             'cohorts' => array( 'group' => 'customers', 'title' => __( 'Customer Cohorts', 'woocommerce-advanced-reports' ), 'method' => 'cohorts' ),
         );
-        $this->reports = apply_filters( 'wcar_register_reports', $this->reports );
+        $filtered = apply_filters( 'wcar_register_reports', $this->reports );
+        if ( is_array( $filtered ) ) {
+            $reports = array();
+            foreach ( $filtered as $id => $definition ) {
+                $report_id = sanitize_key( (string) $id );
+                $group = is_array( $definition ) && isset( $definition['group'] ) && is_scalar( $definition['group'] ) ? (string) $definition['group'] : '';
+                $title = is_array( $definition ) && isset( $definition['title'] ) && is_scalar( $definition['title'] ) ? (string) $definition['title'] : '';
+                $method = is_array( $definition ) && isset( $definition['method'] ) && is_scalar( $definition['method'] ) ? (string) $definition['method'] : '';
+                $callback = is_array( $definition ) ? ( $definition['callback'] ?? null ) : null;
+                if ( ! $report_id || ! $title || ! in_array( $group, array( 'dashboard', 'products', 'orders', 'customers' ), true ) || ( ! $method && ! is_callable( $callback ) ) ) { continue; }
+                $definition['group'] = $group;
+                $definition['title'] = $title;
+                if ( $method ) { $definition['method'] = $method; }
+                $reports[ $report_id ] = $definition;
+            }
+            $this->reports = $reports;
+        }
     }
 
     public function all(): array { return $this->reports; }

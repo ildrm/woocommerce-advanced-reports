@@ -24,7 +24,7 @@ final class OrderRepository {
             }
             $result = wc_get_orders( $args );
             foreach ( $result->orders as $order ) {
-                if ( $this->matches( $order, $filter ) ) {
+                if ( $this->matches( $order, $filter, $override_statuses ) ) {
                     yield $order;
                 }
             }
@@ -32,12 +32,12 @@ final class OrderRepository {
         } while ( $page <= (int) $result->max_num_pages );
     }
 
-    public function iterate_all_until( \DateTimeImmutable $to, array $statuses = array( 'processing', 'completed' ) ): \Generator {
-        $filter = new ReportFilter();
-        $filter->from = new \DateTimeImmutable( '2000-01-01 00:00:00', wp_timezone() );
-        $filter->to = $to;
-        $filter->statuses = $statuses;
-        yield from $this->iterate( $filter );
+    public function iterate_all_until( ReportFilter $filter ): \Generator {
+        $history = clone $filter;
+        $history->from = new \DateTimeImmutable( '1970-01-01 00:00:00', wp_timezone() );
+        $history->compare = false;
+        $history->page = 1;
+        yield from $this->iterate( $history );
     }
 
     public function iterate_refunds( ReportFilter $filter ): \Generator {
@@ -51,14 +51,22 @@ final class OrderRepository {
             ) );
             foreach ( $result->orders as $refund ) {
                 $parent = wc_get_order( $refund->get_parent_id() );
-                if ( $parent && $this->matches( $parent, $filter ) ) { yield array( $refund, $parent ); }
+                if ( ! $parent ) { continue; }
+                $parent_filter = clone $filter;
+                $parent_filter->product_ids = array();
+                $parent_filter->category_ids = array();
+                if ( $this->matches( $parent, $parent_filter ) && $this->refund_items_match( $refund, $filter ) ) {
+                    yield array( $refund, $parent );
+                }
             }
             ++$page;
         } while ( $page <= (int) $result->max_num_pages );
     }
 
-    public function first_order_timestamp( string $identity ): ?int {
-        $key = 'wcar_first_' . md5( strtolower( trim( $identity ) ) );
+    public function first_order_timestamp( string $identity, array $statuses = array( 'processing', 'completed' ) ): ?int {
+        sort( $statuses );
+        $version = (string) get_option( 'wcar_order_cache_version', '1' );
+        $key = 'wcar_first_' . md5( $version . '|' . strtolower( trim( $identity ) ) . '|' . implode( ',', $statuses ) );
         $cached = get_transient( $key );
         if ( false !== $cached ) {
             return $cached ? (int) $cached : null;
@@ -68,7 +76,7 @@ final class OrderRepository {
             'orderby' => 'date',
             'order'   => 'ASC',
             'return'  => 'objects',
-            'status'  => array( 'processing', 'completed' ),
+            'status'  => $statuses ?: array( 'processing', 'completed' ),
         );
         if ( is_email( $identity ) ) {
             $args['customer'] = strtolower( $identity );
@@ -87,7 +95,15 @@ final class OrderRepository {
         return $timestamp;
     }
 
-    public function matches( \WC_Order $order, ReportFilter $filter ): bool {
+    public static function bump_cache_version(): void {
+        update_option( 'wcar_order_cache_version', (string) microtime( true ), false );
+    }
+
+    public function matches( \WC_Order $order, ReportFilter $filter, ?array $override_statuses = null ): bool {
+        $statuses = null !== $override_statuses ? $override_statuses : $filter->statuses;
+        if ( $statuses && ! in_array( $order->get_status(), $statuses, true ) ) {
+            return false;
+        }
         if ( $filter->currency && strtoupper( $order->get_currency() ) !== $filter->currency ) {
             return false;
         }
@@ -134,18 +150,9 @@ final class OrderRepository {
         if ( $filter->product_ids || $filter->category_ids ) {
             $matched = false;
             foreach ( $order->get_items( 'line_item' ) as $item ) {
-                $pid = $item->get_product_id();
-                $vid = $item->get_variation_id();
-                if ( $filter->product_ids && ( in_array( $pid, $filter->product_ids, true ) || in_array( $vid, $filter->product_ids, true ) ) ) {
+                if ( $this->item_matches( $item, $filter ) ) {
                     $matched = true;
                     break;
-                }
-                if ( $filter->category_ids ) {
-                    $terms = wp_get_post_terms( $pid, 'product_cat', array( 'fields' => 'ids' ) );
-                    if ( array_intersect( $filter->category_ids, array_map( 'intval', $terms ) ) ) {
-                        $matched = true;
-                        break;
-                    }
                 }
             }
             if ( ! $matched ) {
@@ -153,5 +160,32 @@ final class OrderRepository {
             }
         }
         return true;
+    }
+
+    public function item_matches( \WC_Order_Item_Product $item, ReportFilter $filter ): bool {
+        $product_id = (int) $item->get_product_id();
+        $variation_id = (int) $item->get_variation_id();
+        if ( $filter->product_ids && ! in_array( $product_id, $filter->product_ids, true ) && ! in_array( $variation_id, $filter->product_ids, true ) ) {
+            return false;
+        }
+        if ( $filter->category_ids ) {
+            $terms = wp_get_post_terms( $product_id, 'product_cat', array( 'fields' => 'ids' ) );
+            if ( is_wp_error( $terms ) || ! array_intersect( $filter->category_ids_with_children(), array_map( 'intval', $terms ) ) ) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private function refund_items_match( \WC_Order_Refund $refund, ReportFilter $filter ): bool {
+        if ( ! $filter->product_ids && ! $filter->category_ids ) {
+            return true;
+        }
+        foreach ( $refund->get_items( 'line_item' ) as $item ) {
+            if ( $this->item_matches( $item, $filter ) ) {
+                return true;
+            }
+        }
+        return false;
     }
 }

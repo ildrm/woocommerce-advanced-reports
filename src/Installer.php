@@ -4,28 +4,67 @@ namespace WCAR;
 use WCAR\Security\Capabilities;
 
 final class Installer {
-    public const DB_VERSION = '1.0.0';
+    public const DB_VERSION = '1.0.1';
 
-    public static function activate(): void {
+    public static function activate( bool $network_wide = false ): void {
+        if ( $network_wide && is_multisite() ) {
+            foreach ( get_sites( array( 'fields'=>'ids', 'number'=>0 ) ) as $site_id ) {
+                switch_to_blog( (int) $site_id );
+                self::activate_site();
+                restore_current_blog();
+            }
+            return;
+        }
+        self::activate_site();
+    }
+
+    private static function activate_site(): void {
+        $new_install = false === get_option( 'wcar_settings', false );
         self::create_tables();
-        Capabilities::install();
+        Capabilities::install( $new_install );
         update_option( 'wcar_db_version', self::DB_VERSION );
+        update_option( 'wcar_order_cache_version', (string) microtime( true ), false );
+        update_option( 'wcar_report_cache_version', (string) microtime( true ), false );
         if ( ! get_option( 'wcar_settings' ) ) {
             add_option( 'wcar_settings', self::default_settings() );
         }
         flush_rewrite_rules();
     }
 
-    public static function deactivate(): void {
-        wp_clear_scheduled_hook( 'wcar_fallback_schedule_runner' );
-        wp_clear_scheduled_hook( 'wcar_cleanup_exports' );
+    public static function deactivate( bool $network_wide = false ): void {
+        if ( $network_wide && is_multisite() ) {
+            foreach ( get_sites( array( 'fields'=>'ids', 'number'=>0 ) ) as $site_id ) {
+                switch_to_blog( (int) $site_id );
+                self::deactivate_site();
+                restore_current_blog();
+            }
+            return;
+        }
+        self::deactivate_site();
+    }
+
+    private static function deactivate_site(): void {
+        foreach ( array( 'wcar_fallback_schedule_runner', 'wcar_cleanup_exports', 'wcar_generate_export_job', 'wcar_run_scheduled_report' ) as $hook ) {
+            wp_unschedule_hook( $hook );
+        }
+        if ( function_exists( 'as_unschedule_all_actions' ) ) {
+            as_unschedule_all_actions( 'wcar_generate_export_job' );
+            as_unschedule_all_actions( 'wcar_run_scheduled_report' );
+        }
+        delete_transient( 'wcar_export_reconcile_lock' );
+        delete_transient( 'wcar_schedule_reconcile_lock' );
+        delete_transient( 'wcar_schedule_reconcile_cursor' );
     }
 
     public static function maybe_upgrade(): void {
         if ( self::DB_VERSION !== get_option( 'wcar_db_version' ) ) {
+            $new_install = false === get_option( 'wcar_settings', false );
             self::create_tables();
-            Capabilities::install();
+            Capabilities::install( $new_install );
             update_option( 'wcar_db_version', self::DB_VERSION );
+            update_option( 'wcar_order_cache_version', (string) microtime( true ), false );
+            update_option( 'wcar_report_cache_version', (string) microtime( true ), false );
+            if ( $new_install ) { add_option( 'wcar_settings', self::default_settings() ); }
         }
     }
 
@@ -50,6 +89,7 @@ final class Installer {
             'inactive_days'       => '90',
             'dead_stock_days'     => '90',
             'dead_stock_max_sold' => '0',
+            'delete_data_on_uninstall' => '',
         );
     }
 
@@ -86,11 +126,14 @@ final class Installer {
             status VARCHAR(30) NOT NULL DEFAULT 'ready',
             error_message TEXT NULL,
             created_at DATETIME NOT NULL,
+            started_at DATETIME NULL,
             expires_at DATETIME NULL,
             PRIMARY KEY (id),
             KEY user_id (user_id),
             KEY report_id (report_id),
-            KEY status (status)
+            KEY status (status),
+            KEY started_at (started_at),
+            KEY expires_at (expires_at)
         ) {$charset};" );
 
         dbDelta( "CREATE TABLE {$scheduled} (
@@ -107,12 +150,15 @@ final class Installer {
             action_id BIGINT UNSIGNED NULL,
             last_run DATETIME NULL,
             next_run DATETIME NULL,
+            locked_at DATETIME NULL,
+            last_error TEXT NULL,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
             PRIMARY KEY (id),
             KEY user_id (user_id),
             KEY active (active),
-            KEY report_id (report_id)
+            KEY report_id (report_id),
+            KEY next_run (next_run)
         ) {$charset};" );
     }
 }

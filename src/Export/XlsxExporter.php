@@ -7,48 +7,63 @@ final class XlsxExporter implements ExporterInterface {
 
     public function write_file( string $path, string $title, array $columns, iterable $rows, array $meta = array() ): void {
         $tmp = wp_tempnam( 'wcar-sheet.xml' );
+        if ( ! $tmp ) { throw new \RuntimeException( 'Cannot create worksheet.' ); }
         $fp = fopen( $tmp, 'wb' );
-        if ( ! $fp ) { throw new \RuntimeException( 'Cannot create worksheet.' ); }
-        fwrite( $fp, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' );
-        $r = 1;
-        $this->write_row( $fp, $r++, array( $title ), true );
-        foreach ( $meta as $k => $v ) { $this->write_row( $fp, $r++, array( (string) $k, is_scalar( $v ) ? (string) $v : wp_json_encode( $v ) ) ); }
-        ++$r;
-        $header_row = $r;
-        $this->write_row( $fp, $r++, array_values( $columns ), true );
-        foreach ( $rows as $row ) {
-            $vals = array();
-            foreach ( array_keys( $columns ) as $key ) { $vals[] = $row[ $key ] ?? ''; }
-            $this->write_row( $fp, $r++, $vals );
-        }
-        $last_col = $this->col( max( 1, count( $columns ) ) );
-        fwrite( $fp, '</sheetData><autoFilter ref="A' . $header_row . ':' . $last_col . max( $header_row, $r - 1 ) . '"/></worksheet>' );
-        fclose( $fp );
+        if ( ! $fp ) { unlink( $tmp ); throw new \RuntimeException( 'Cannot create worksheet.' ); }
+        try {
+            $this->write( $fp, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' );
+            $r = 1;
+            $this->write_row( $fp, $r++, array( $title ), true );
+            foreach ( $meta as $k => $v ) { $this->write_row( $fp, $r++, array( (string) $k, is_scalar( $v ) ? (string) $v : wp_json_encode( $v ) ) ); }
+            ++$r;
+            $header_row = $r;
+            $this->write_row( $fp, $r++, array_values( $columns ), true );
+            foreach ( $rows as $row ) {
+                if ( $r > 1048576 ) { throw new \RuntimeException( 'The XLSX row limit was exceeded.' ); }
+                $vals = array();
+                foreach ( array_keys( $columns ) as $key ) { $vals[] = $row[ $key ] ?? ''; }
+                $this->write_row( $fp, $r++, $vals );
+            }
+            $last_col = $this->col( max( 1, count( $columns ) ) );
+            $this->write( $fp, '</sheetData><autoFilter ref="A' . $header_row . ':' . $last_col . max( $header_row, $r - 1 ) . '"/></worksheet>' );
+            fclose( $fp );
+            $fp = null;
 
-        $zip = new SimpleZipWriter( $path );
-        $zip->add_string( '[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>' );
-        $zip->add_string( '_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' );
-        $zip->add_string( 'xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Report" sheetId="1" r:id="rId1"/></sheets></workbook>' );
-        $zip->add_string( 'xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' );
-        $zip->add_string( 'xl/styles.xml', '<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>' );
-        $zip->add_file( 'xl/worksheets/sheet1.xml', $tmp );
-        $zip->close();
-        @unlink( $tmp );
+            $zip = new SimpleZipWriter( $path );
+            $zip->add_string( '[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>' );
+            $zip->add_string( '_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' );
+            $zip->add_string( 'xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Report" sheetId="1" r:id="rId1"/></sheets></workbook>' );
+            $zip->add_string( 'xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' );
+            $zip->add_string( 'xl/styles.xml', '<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>' );
+            $zip->add_file( 'xl/worksheets/sheet1.xml', $tmp );
+            $zip->close();
+        } finally {
+            if ( is_resource( $fp ) ) { fclose( $fp ); }
+            if ( is_file( $tmp ) ) { unlink( $tmp ); }
+        }
     }
 
     private function write_row( $fp, int $row_num, array $values, bool $bold = false ): void {
-        fwrite( $fp, '<row r="' . $row_num . '">' );
+        if ( $row_num > 1048576 ) { throw new \RuntimeException( 'The XLSX row limit was exceeded.' ); }
+        if ( count( $values ) > 16384 ) { throw new \RuntimeException( 'The XLSX column limit was exceeded.' ); }
+        $this->write( $fp, '<row r="' . $row_num . '">' );
         foreach ( array_values( $values ) as $i => $value ) {
             $ref = $this->col( $i + 1 ) . $row_num;
             $style = $bold ? ' s="1"' : '';
-            if ( is_int( $value ) || is_float( $value ) ) {
-                fwrite( $fp, '<c r="' . $ref . '"' . $style . ' t="n"><v>' . $value . '</v></c>' );
+            if ( ( is_int( $value ) || is_float( $value ) ) && is_finite( (float) $value ) ) {
+                $this->write( $fp, '<c r="' . $ref . '"' . $style . ' t="n"><v>' . $value . '</v></c>' );
             } else {
                 $text = is_scalar( $value ) || null === $value ? (string) $value : wp_json_encode( $value );
-                fwrite( $fp, '<c r="' . $ref . '"' . $style . ' t="inlineStr"><is><t xml:space="preserve">' . htmlspecialchars( $text, ENT_XML1 | ENT_QUOTES, 'UTF-8' ) . '</t></is></c>' );
+                $text = wp_check_invalid_utf8( $text, true );
+                $text = preg_replace( '/[^\x09\x0A\x0D\x20-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]/u', '', $text ) ?? '';
+                $this->write( $fp, '<c r="' . $ref . '"' . $style . ' t="inlineStr"><is><t xml:space="preserve">' . htmlspecialchars( $text, ENT_XML1 | ENT_QUOTES, 'UTF-8' ) . '</t></is></c>' );
             }
         }
-        fwrite( $fp, '</row>' );
+        $this->write( $fp, '</row>' );
+    }
+
+    private function write( $fp, string $data ): void {
+        if ( strlen( $data ) !== fwrite( $fp, $data ) ) { throw new \RuntimeException( 'Cannot write worksheet output.' ); }
     }
 
     private function col( int $n ): string {

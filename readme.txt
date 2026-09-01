@@ -2,8 +2,11 @@
 Contributors: ildrm
 Tags: woocommerce, reports, analytics, jalali, excel, csv, hpos
 Requires at least: 6.5
+Tested up to: 7.0
 Requires PHP: 8.1
-Stable tag: 1.0.0
+WC requires at least: 8.2
+WC tested up to: 11.0
+Stable tag: 1.0.1
 License: MIT
 
 Comprehensive HPOS-compatible WooCommerce Product, Order and Customer reports with Jalali/Gregorian dates, CSV/XLSX, print, saved and scheduled reports.
@@ -23,6 +26,10 @@ See README.md inside the plugin for the full report catalog, metric definitions 
 5. Open Reports.
 
 == Changelog ==
+
+= 1.0.1 =
+* Fixed report authorization, filters, dates, calculations, caches, exports, schedules and cleanup.
+* Added HPOS compatibility declaration, regression tests and PHP 8.1-8.5 plugin-code CI validation.
 
 = 1.0.0 =
 * Initial production implementation.

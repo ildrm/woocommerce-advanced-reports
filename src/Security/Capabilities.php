@@ -14,8 +14,26 @@ final class Capabilities {
         return array( self::VIEW, self::PRODUCTS, self::ORDERS, self::CUSTOMERS, self::EXPORT, self::PRINT, self::SETTINGS );
     }
 
-    public static function install(): void {
-        foreach ( array( 'administrator', 'shop_manager' ) as $role_name ) {
+    public static function for_report( array $definition ): string {
+        return match ( $definition['group'] ?? '' ) {
+            'products'  => self::PRODUCTS,
+            'orders'    => self::ORDERS,
+            'customers' => self::CUSTOMERS,
+            default     => self::VIEW,
+        };
+    }
+
+    public static function current_user_can_report( array $definition ): bool {
+        return current_user_can( self::VIEW ) && current_user_can( self::for_report( $definition ) );
+    }
+
+    public static function user_can_report( int $user_id, array $definition ): bool {
+        return $user_id > 0 && user_can( $user_id, self::VIEW ) && user_can( $user_id, self::for_report( $definition ) );
+    }
+
+    public static function install( bool $grant_shop_manager_defaults = true ): void {
+        $roles = $grant_shop_manager_defaults ? array( 'administrator', 'shop_manager' ) : array( 'administrator' );
+        foreach ( $roles as $role_name ) {
             $role = get_role( $role_name );
             if ( ! $role ) {
                 continue;
